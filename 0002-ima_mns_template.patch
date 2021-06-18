@@ -1,0 +1,129 @@
+From 2c0f5f9ba43793435fc890da6156abb69ff3d6f1 Mon Sep 17 00:00:00 2001
+From: Silvia Sisinni <silviasisinni@gmail.com>
+Date: Sun, 31 Jan 2021 18:36:53 +0100
+Subject: [PATCH 2/3] ima_mns_template
+
+---
+ security/integrity/ima/Kconfig            |  3 ++
+ security/integrity/ima/ima_template.c     |  3 ++
+ security/integrity/ima/ima_template_lib.c | 45 +++++++++++++++++++++++
+ security/integrity/ima/ima_template_lib.h |  2 +
+ 4 files changed, 53 insertions(+)
+
+diff --git a/security/integrity/ima/Kconfig b/security/integrity/ima/Kconfig
+index 9310f7905975..921e566ef2e1 100644
+--- a/security/integrity/ima/Kconfig
++++ b/security/integrity/ima/Kconfig
+@@ -80,6 +80,8 @@ choice
+ 		bool "ima-sig"
+ 	config IMA_CGN_TEMPLATE
+ 		bool "ima-cgn"
++	config IMA_MNS_TEMPLATE
++		bool "ima-mns"
+ endchoice
+ 
+ config IMA_DEFAULT_TEMPLATE
+@@ -89,6 +91,7 @@ config IMA_DEFAULT_TEMPLATE
+ 	default "ima-ng" if IMA_NG_TEMPLATE
+ 	default "ima-sig" if IMA_SIG_TEMPLATE
+ 	default "ima-cgn" if IMA_CGN_TEMPLATE
++	default "ima-mns" if IMA_MNS_TEMPLATE
+ 
+ choice
+ 	prompt "Default integrity hash algorithm"
+diff --git a/security/integrity/ima/ima_template.c b/security/integrity/ima/ima_template.c
+index 3b16514372dc..c4c902d087bd 100644
+--- a/security/integrity/ima/ima_template.c
++++ b/security/integrity/ima/ima_template.c
+@@ -23,6 +23,7 @@ static struct ima_template_desc builtin_templates[] = {
+ 	{.name = "ima-buf", .fmt = "d-ng|n-ng|buf"},
+ 	{.name = "ima-modsig", .fmt = "d-ng|n-ng|sig|d-modsig|modsig"},
+ 	{.name = "ima-cgn", .fmt = "pid|cgn|d-ng|n-ng"},
++	{.name = "ima-mns", .fmt = "pid|mns|d-ng|n-ng"},
+ 	{.name = "", .fmt = ""},	/* placeholder for a custom format */
+ };
+ 
+@@ -50,6 +51,8 @@ static const struct ima_template_field supported_fields[] = {
+ 	 .field_show = ima_show_template_string},
+ 	{.field_id = "cgn", .field_init = ima_eventcgn_init,
+ 	 .field_show = ima_show_template_string},
++	{.field_id = "mns", .field_init = ima_eventmns_init,
++	 .field_show = ima_show_template_string},
+ };
+ 
+ /*
+diff --git a/security/integrity/ima/ima_template_lib.c b/security/integrity/ima/ima_template_lib.c
+index 9629257b1e8f..3b2ba9d74679 100644
+--- a/security/integrity/ima/ima_template_lib.c
++++ b/security/integrity/ima/ima_template_lib.c
+@@ -12,6 +12,10 @@
+ #include <linux/string.h>
+ #include <linux/cgroup.h>
+ #include <uapi/linux/limits.h>
++#include <linux/mnt_namespace.h>
++#include <linux/types.h>
++#include <asm-generic/atomic-long.h>
++#include <linux/ns_common.h>
+ 
+ #include "ima_template_lib.h"
+ 
+@@ -563,3 +567,44 @@ int ima_eventcgn_init(struct ima_event_data *event_data,
+ 	return 0;
+ }
+ 
++/*
++ * ima_eventmns_init - inclue the current task's mount namespace inum as part of the
++ * template data
++ */
++int ima_eventmns_init(struct ima_event_data *event_data,
++			 struct ima_field_data *field_data)
++{
++	char *mns_inum_str = NULL;
++	struct mnt_namespace *mnt_ns = NULL;
++	struct ns_common *ns_common = NULL;
++
++	mns_inum_str = kmalloc(11, GFP_KERNEL);
++	if (!mns_inum_str)
++		return -ENOMEM;
++
++	if (current->nsproxy)
++		mnt_ns = current->nsproxy->mnt_ns;
++
++	if (!mnt_ns)
++		goto out;
++
++	ns_common = from_mnt_ns(mnt_ns);
++
++	if (!ns_common)
++		goto out;
++
++	sprintf(mns_inum_str, "%u", ns_common->inum);
++
++	field_data->data = mns_inum_str;
++	field_data->len = strlen(mns_inum_str);
++
++	return 0;
++
++out:
++	sprintf(mns_inum_str, "-");
++	field_data->data = mns_inum_str;
++	field_data->len = 1;
++
++	return 0;
++}
++
+diff --git a/security/integrity/ima/ima_template_lib.h b/security/integrity/ima/ima_template_lib.h
+index dd04fc42fe45..d0744d698444 100644
+--- a/security/integrity/ima/ima_template_lib.h
++++ b/security/integrity/ima/ima_template_lib.h
+@@ -50,5 +50,7 @@ int ima_eventpid_init(struct ima_event_data *event_data,
+ 		      struct ima_field_data *field_data);
+ int ima_eventcgn_init(struct ima_event_data *event_data,
+ 		      struct ima_field_data *field_data);
++int ima_eventmns_init(struct ima_event_data *event_data,
++		      struct ima_field_data *field_data);
+ #endif /* __LINUX_IMA_TEMPLATE_LIB_H */
+ 
+-- 
+2.25.1
+

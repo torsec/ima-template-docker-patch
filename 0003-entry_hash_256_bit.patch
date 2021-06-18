@@ -1,0 +1,225 @@
+From 4044255dedc1533b3a312afdad8384691e38cfee Mon Sep 17 00:00:00 2001
+From: Silvia Sisinni <silviasisinni@gmail.com>
+Date: Fri, 5 Feb 2021 20:38:34 +0100
+Subject: [PATCH 3/3] entry_hash_256_bit
+
+---
+ include/linux/tpm.h                 |  1 +
+ security/integrity/ima/Kconfig      | 31 +++++++++++++++++++++++++++--
+ security/integrity/ima/ima.h        |  2 ++
+ security/integrity/ima/ima_crypto.c |  5 +++++
+ security/integrity/ima/ima_fs.c     | 18 +++++++++++++++--
+ security/integrity/ima/ima_main.c   | 28 ++++++++++++++++++++++++++
+ 6 files changed, 81 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/tpm.h b/include/linux/tpm.h
+index 8f4ff39f51e7..4c4e370183ba 100644
+--- a/include/linux/tpm.h
++++ b/include/linux/tpm.h
+@@ -25,6 +25,7 @@
+ #include <crypto/hash_info.h>
+ 
+ #define TPM_DIGEST_SIZE 20	/* Max TPM v1.2 PCR size */
++#define TPM2_DIGEST_SIZE 32	/* Max TPM v2.0 PCR size */
+ #define TPM_MAX_DIGEST_SIZE SHA512_DIGEST_SIZE
+ 
+ struct tpm_chip;
+diff --git a/security/integrity/ima/Kconfig b/security/integrity/ima/Kconfig
+index 921e566ef2e1..373e978ae45f 100644
+--- a/security/integrity/ima/Kconfig
++++ b/security/integrity/ima/Kconfig
+@@ -133,13 +133,39 @@ config IMA_DEFAULT_HASH
+ 	default "wp512" if IMA_DEFAULT_HASH_WP512
+ 	default "sm3" if IMA_DEFAULT_HASH_SM3
+ 
++choice
++	prompt "Default entry-hash algorithm"
++	default IMA_DEFAULT_ENTRY_HASH_SHA1
++	depends on IMA
++	help
++	   Select the default entry-hash algorithm used for entries in the 
++	   Measurement Log.  The compiled default entry-hash algorithm can 
++	   be overwritten using the kernel command line 'ima_entry_hash=' 
++	   option.
++
++	config IMA_DEFAULT_ENTRY_HASH_SHA1
++		bool "SHA1 (default)"
++		depends on CRYPTO_SHA1=y
++
++	config IMA_DEFAULT_ENTRY_HASH_SHA256
++		bool "SHA256"
++		depends on CRYPTO_SHA256=y 
++endchoice
++
++config IMA_DEFAULT_ENTRY_HASH
++	string
++	depends on IMA
++	default "sha1" if IMA_DEFAULT_ENTRY_HASH_SHA1
++	default "sha256" if IMA_DEFAULT_ENTRY_HASH_SHA256
++
+ config IMA_CACHE1_ENABLED
+ 	bool "IMA cache1 enabled"
+ 	depends on IMA
+ 	default y
+ 	help
+ 	  This option is selected to enable IMA to store the measure of a file
+-	  in the Measurement Log only once
++	  in the Measurement Log only once. The compiled default value can be 
++	  overwritten using the kernel command line 'ima_cache1=' option.
+ 
+ config IMA_CACHE2_ENABLED
+ 	bool "IMA cache2 enabled"
+@@ -147,7 +173,8 @@ config IMA_CACHE2_ENABLED
+ 	default y
+ 	help
+ 	  This option is selected to enable IMA to maintain an hash table with all
+-	  the measurements already made
++	  the measurements already made. The compiled default value can be 
++	  overwritten using the kernel command line 'ima_cache2=' option.
+ 
+ config IMA_WRITE_POLICY
+ 	bool "Enable multiple writes to the IMA policy"
+diff --git a/security/integrity/ima/ima.h b/security/integrity/ima/ima.h
+index 68c6ad0da83d..798309076bf7 100644
+--- a/security/integrity/ima/ima.h
++++ b/security/integrity/ima/ima.h
+@@ -56,7 +56,9 @@ extern int ima_policy_flag;
+ 
+ /* set during initialization */
+ extern int ima_hash_algo;
++extern int ima_entry_hash_algo;
+ extern int ima_sha1_idx __ro_after_init;
++extern int ima_sha256_idx __ro_after_init;
+ extern int ima_hash_algo_idx __ro_after_init;
+ extern int ima_extra_slots __ro_after_init;
+ extern int ima_appraise;
+diff --git a/security/integrity/ima/ima_crypto.c b/security/integrity/ima/ima_crypto.c
+index f6a7e9643b54..a9cc86fae721 100644
+--- a/security/integrity/ima/ima_crypto.c
++++ b/security/integrity/ima/ima_crypto.c
+@@ -64,6 +64,7 @@ struct ima_algo_desc {
+ 
+ int ima_sha1_idx __ro_after_init;
+ int ima_hash_algo_idx __ro_after_init;
++int ima_sha256_idx __ro_after_init;
+ /*
+  * Additional number of slots reserved, as needed, for SHA1
+  * and IMA default algo.
+@@ -124,6 +125,7 @@ int __init ima_init_crypto(void)
+ 
+ 	ima_sha1_idx = -1;
+ 	ima_hash_algo_idx = -1;
++	ima_sha256_idx = -1;
+ 
+ 	for (i = 0; i < NR_BANKS(ima_tpm_chip); i++) {
+ 		algo = ima_tpm_chip->allocated_banks[i].crypto_id;
+@@ -132,6 +134,9 @@ int __init ima_init_crypto(void)
+ 
+ 		if (algo == ima_hash_algo)
+ 			ima_hash_algo_idx = i;
++
++		if (algo == HASH_ALGO_SHA256)
++			ima_sha256_idx = i;
+ 	}
+ 
+ 	if (ima_sha1_idx < 0) {
+diff --git a/security/integrity/ima/ima_fs.c b/security/integrity/ima/ima_fs.c
+index ea8ff8a07b36..3ede846874cf 100644
+--- a/security/integrity/ima/ima_fs.c
++++ b/security/integrity/ima/ima_fs.c
+@@ -21,6 +21,7 @@
+ #include <linux/rcupdate.h>
+ #include <linux/parser.h>
+ #include <linux/vmalloc.h>
++#include <linux/tpm.h>
+ 
+ #include "ima.h"
+ 
+@@ -151,7 +152,10 @@ int ima_measurements_show(struct seq_file *m, void *v)
+ 	ima_putc(m, &pcr, sizeof(e->pcr));
+ 
+ 	/* 2nd: template digest */
+-	ima_putc(m, e->digests[ima_sha1_idx].digest, TPM_DIGEST_SIZE);
++	if ((ima_tpm_chip->flags & TPM_CHIP_FLAG_TPM2) && (ima_entry_hash_algo == HASH_ALGO_SHA256) && (ima_sha256_idx != -1)) 
++		ima_putc(m, e->digests[ima_sha256_idx].digest, TPM2_DIGEST_SIZE);
++	else
++		ima_putc(m, e->digests[ima_sha1_idx].digest, TPM_DIGEST_SIZE);
+ 
+ 	/* 3rd: template name size */
+ 	namelen = !ima_canonical_fmt ? strlen(template_name) :
+@@ -234,7 +238,17 @@ static int ima_ascii_measurements_show(struct seq_file *m, void *v)
+ 	seq_printf(m, "%2d ", e->pcr);
+ 
+ 	/* 2nd: SHA1 template hash */
+-	ima_print_digest(m, e->digests[ima_sha1_idx].digest, TPM_DIGEST_SIZE);
++	if ((ima_tpm_chip->flags & TPM_CHIP_FLAG_TPM2) && (ima_entry_hash_algo == HASH_ALGO_SHA256) && (ima_sha256_idx != -1)) {
++		//for (i = 0; i < ima_tpm_chip->nr_allocated_banks; i++)
++		//	if (e->digests[i].alg_id == TPM_ALG_SHA256) {
++		//		ima_print_digest(m, e->digests[i].digest, TPM2_DIGEST_SIZE);
++		//		flag = true;
++		//		break;
++		//	}
++		ima_print_digest(m, e->digests[ima_sha256_idx].digest, TPM2_DIGEST_SIZE);
++	} else {
++		ima_print_digest(m, e->digests[ima_sha1_idx].digest, TPM_DIGEST_SIZE);
++	}
+ 
+ 	/* 3th:  template name */
+ 	seq_printf(m, " %s", template_name);
+diff --git a/security/integrity/ima/ima_main.c b/security/integrity/ima/ima_main.c
+index 343f6d6d7419..4f893bca1b02 100644
+--- a/security/integrity/ima/ima_main.c
++++ b/security/integrity/ima/ima_main.c
+@@ -36,7 +36,9 @@ int ima_appraise;
+ #endif
+ 
+ int ima_hash_algo = HASH_ALGO_SHA1;
++int ima_entry_hash_algo = HASH_ALGO_SHA1;
+ static int hash_setup_done;
++static int entry_hash_setup_done;
+ 
+ static struct notifier_block ima_lsm_policy_notifier = {
+ 	.notifier_call = ima_lsm_policy_change,
+@@ -88,6 +90,29 @@ static int __init hash_setup(char *str)
+ }
+ __setup("ima_hash=", hash_setup);
+ 
++static int __init entry_hash_setup(char *str)
++{
++	if (entry_hash_setup_done)
++		return 1;
++
++	if ((ima_tpm_chip->flags & TPM_CHIP_FLAG_TPM2) && !strcmp(str, "sha256")) {
++		pr_info("Using \"sha256\" as entry-hash algorithm in the Measurements Log.");
++		ima_entry_hash_algo = HASH_ALGO_SHA256;
++		goto out;
++	}
++
++	if (strcmp(str, "sha1")) 
++		pr_err("Invalid entry-hash algorithm \"%s\", using \"sha1\" in the measurements log.", str);
++	else
++		pr_info("Using \"sha1\" as entry-hash algorithm in the Measurements Log.");
++
++out:
++	entry_hash_setup_done = 1;
++	return 1;
++}
++__setup("ima_entry_hash=", entry_hash_setup);
++
++
+ /* Prevent mmap'ing a file execute that is already mmap'ed write */
+ static int mmap_violation_check(enum ima_hooks func, struct file *file,
+ 				char **pathbuf, const char **pathname,
+@@ -920,6 +945,9 @@ static int __init init_ima(void)
+ 	hash_setup(CONFIG_IMA_DEFAULT_HASH);
+ 	error = ima_init();
+ 
++	/* call entry_hash_setup() after ima_init() */
++	entry_hash_setup(CONFIG_IMA_DEFAULT_ENTRY_HASH);
++
+ 	if (error && strcmp(hash_algo_name[ima_hash_algo],
+ 			    CONFIG_IMA_DEFAULT_HASH) != 0) {
+ 		pr_info("Allocating %s failed, going to use default hash algorithm %s\n",
+-- 
+2.25.1
+
