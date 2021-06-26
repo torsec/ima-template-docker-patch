@@ -6,14 +6,14 @@ Install git on the machine:
 	$ sudo apt-get update
 	$ sudo apt-get install git
 	
-Clone the stable kernel git in a new directory `linux_stable`:
+Clone the Linux stable kernel in a new directory `linux_stable`:
 
 	$ git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git linux_stable
 
-The stable repository has several branches, starting from `linux-2.6.11.y`, change to the `linux-5.10.y`:
+The stable repository has several branches, starting from `linux-2.6.11.y`, change to the `linux-5.12.y`:
 
 	$ cd linux_stable
-	$ git checkout linux-5.10.y
+	$ git checkout linux-5.12.y
 
 Copy the IMA patches inside the `linux_stable` directory.
 
@@ -28,6 +28,7 @@ Then apply IMA patches:
 	$ git am --signoff < 0001-ima_cgn_template.patch
 	$ git am --signoff < 0002-ima_mns_template.patch
 	$ git am --signoff < 0003-entry_hash_256_bit.patch
+	$ git am --signoff < 0004-ima_dep_cgn_template.patch
 
 ## Compiling the kernel
 
@@ -46,12 +47,12 @@ Then launch:
 
 	$ make menuconfig
 
-Select `Security options --->`, then in the `Integrity Measurement Architecture(IMA)` select the following configuration:
+Select `Security options --->`, then select the following configuration in the `Integrity Measurement Architecture(IMA)` section:
 
 	[*]   Integrity Measurement Architecture(IMA)
-		Default template (ima-cgn) --->
+		Default template (ima-dep-cgn) --->
 		Default integrity hash algorithm (SHA256) --->
-		Default entry-hash algorithm (SHA256) --->
+		Default template-hash algorithm (SHA256) --->
 	[ ]	IMA cache1 enabled
 	[ ]	IMA cache2 enabled
 
@@ -64,7 +65,7 @@ For compiling the kernel, install:
 Then compile the kernel:
 
 	$ sudo make-kpkg clean
-	$ sudo fakeroot make-kpkg --initrd --append-to-version=-ima-cgn-hash-256 kernel_image kernel_headers
+	$ sudo fakeroot make-kpkg --initrd --append-to-version=-ima-dep-cgn kernel_image kernel_headers
 
 When the compilation finishes, install the new kernel:
 

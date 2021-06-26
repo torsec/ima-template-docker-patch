@@ -1,0 +1,610 @@
+From f51179803b62957faaf9fb5295c8955c15651551 Mon Sep 17 00:00:00 2001
+From: Silvia Sisinni <silviasisinni@gmail.com>
+Date: Sun, 27 Jun 2021 00:15:09 +0200
+Subject: [PATCH 4/4] ima_dep_cgn_template
+
+---
+ security/integrity/ima/Kconfig            |  37 ++++--
+ security/integrity/ima/ima.h              |   4 +-
+ security/integrity/ima/ima_crypto.c       |  27 ++++-
+ security/integrity/ima/ima_fs.c           |  38 +++---
+ security/integrity/ima/ima_main.c         |  40 ++++---
+ security/integrity/ima/ima_template.c     |   8 +-
+ security/integrity/ima/ima_template_lib.c | 140 ++++++++++++++++++----
+ security/integrity/ima/ima_template_lib.h |   4 +
+ 8 files changed, 218 insertions(+), 80 deletions(-)
+
+diff --git a/security/integrity/ima/Kconfig b/security/integrity/ima/Kconfig
+index 373e978ae45f..7c4feb690231 100644
+--- a/security/integrity/ima/Kconfig
++++ b/security/integrity/ima/Kconfig
+@@ -82,6 +82,10 @@ choice
+ 		bool "ima-cgn"
+ 	config IMA_MNS_TEMPLATE
+ 		bool "ima-mns"
++	config IMA_COMM_TEMPLATE
++		bool "ima-comm"
++	config IMA_DEP_CGN_TEMPLATE
++		bool "ima-dep-cgn"
+ endchoice
+ 
+ config IMA_DEFAULT_TEMPLATE
+@@ -92,6 +96,8 @@ config IMA_DEFAULT_TEMPLATE
+ 	default "ima-sig" if IMA_SIG_TEMPLATE
+ 	default "ima-cgn" if IMA_CGN_TEMPLATE
+ 	default "ima-mns" if IMA_MNS_TEMPLATE
++	default "ima-comm" if IMA_COMM_TEMPLATE
++	default "ima-dep-cgn" if IMA_DEP_CGN_TEMPLATE
+ 
+ choice
+ 	prompt "Default integrity hash algorithm"
+@@ -134,29 +140,34 @@ config IMA_DEFAULT_HASH
+ 	default "sm3" if IMA_DEFAULT_HASH_SM3
+ 
+ choice
+-	prompt "Default entry-hash algorithm"
+-	default IMA_DEFAULT_ENTRY_HASH_SHA1
++	prompt "Default template-hash algorithm"
++	default IMA_DEFAULT_TEMPLATE_HASH_SHA1
+ 	depends on IMA
+ 	help
+-	   Select the default entry-hash algorithm used for entries in the 
+-	   Measurement Log.  The compiled default entry-hash algorithm can 
+-	   be overwritten using the kernel command line 'ima_entry_hash=' 
++	   Select the default template-hash algorithm written in Measurement
++	   Log entries. The compiled default template-hash algorithm can
++	   be overwritten using the kernel command line 'ima_template_hash='
+ 	   option.
+ 
+-	config IMA_DEFAULT_ENTRY_HASH_SHA1
++	config IMA_DEFAULT_TEMPLATE_HASH_SHA1
+ 		bool "SHA1 (default)"
+ 		depends on CRYPTO_SHA1=y
+ 
+-	config IMA_DEFAULT_ENTRY_HASH_SHA256
++	config IMA_DEFAULT_TEMPLATE_HASH_SHA256
+ 		bool "SHA256"
+-		depends on CRYPTO_SHA256=y 
++		depends on CRYPTO_SHA256=y
++
++	config IMA_DEFAULT_TEMPLATE_HASH_SHA512
++		bool "SHA512"
++		depends on CRYPTO_SHA512=y
+ endchoice
+ 
+-config IMA_DEFAULT_ENTRY_HASH
++config IMA_DEFAULT_TEMPLATE_HASH
+ 	string
+ 	depends on IMA
+-	default "sha1" if IMA_DEFAULT_ENTRY_HASH_SHA1
+-	default "sha256" if IMA_DEFAULT_ENTRY_HASH_SHA256
++	default "sha1" if IMA_DEFAULT_TEMPLATE_HASH_SHA1
++	default "sha256" if IMA_DEFAULT_TEMPLATE_HASH_SHA256
++	default "sha512" if IMA_DEFAULT_TEMPLATE_HASH_SHA512
+ 
+ config IMA_CACHE1_ENABLED
+ 	bool "IMA cache1 enabled"
+@@ -164,7 +175,7 @@ config IMA_CACHE1_ENABLED
+ 	default y
+ 	help
+ 	  This option is selected to enable IMA to store the measure of a file
+-	  in the Measurement Log only once. The compiled default value can be 
++	  in the Measurement Log only once. The compiled default value can be
+ 	  overwritten using the kernel command line 'ima_cache1=' option.
+ 
+ config IMA_CACHE2_ENABLED
+@@ -173,7 +184,7 @@ config IMA_CACHE2_ENABLED
+ 	default y
+ 	help
+ 	  This option is selected to enable IMA to maintain an hash table with all
+-	  the measurements already made. The compiled default value can be 
++	  the measurements already made. The compiled default value can be
+ 	  overwritten using the kernel command line 'ima_cache2=' option.
+ 
+ config IMA_WRITE_POLICY
+diff --git a/security/integrity/ima/ima.h b/security/integrity/ima/ima.h
+index 456e683e6bf8..3f9fc54a66c6 100644
+--- a/security/integrity/ima/ima.h
++++ b/security/integrity/ima/ima.h
+@@ -56,10 +56,10 @@ extern int ima_policy_flag;
+ 
+ /* set during initialization */
+ extern int ima_hash_algo;
+-extern int ima_entry_hash_algo;
++extern int ima_template_hash_algo;
+ extern int ima_sha1_idx __ro_after_init;
+-extern int ima_sha256_idx __ro_after_init;
+ extern int ima_hash_algo_idx __ro_after_init;
++extern int ima_template_hash_algo_idx __ro_after_init;
+ extern int ima_extra_slots __ro_after_init;
+ extern int ima_appraise;
+ extern struct tpm_chip *ima_tpm_chip;
+diff --git a/security/integrity/ima/ima_crypto.c b/security/integrity/ima/ima_crypto.c
+index a9cc86fae721..67329f9173f0 100644
+--- a/security/integrity/ima/ima_crypto.c
++++ b/security/integrity/ima/ima_crypto.c
+@@ -64,7 +64,7 @@ struct ima_algo_desc {
+ 
+ int ima_sha1_idx __ro_after_init;
+ int ima_hash_algo_idx __ro_after_init;
+-int ima_sha256_idx __ro_after_init;
++int ima_template_hash_algo_idx __ro_after_init;
+ /*
+  * Additional number of slots reserved, as needed, for SHA1
+  * and IMA default algo.
+@@ -125,7 +125,7 @@ int __init ima_init_crypto(void)
+ 
+ 	ima_sha1_idx = -1;
+ 	ima_hash_algo_idx = -1;
+-	ima_sha256_idx = -1;
++	ima_template_hash_algo_idx = -1;
+ 
+ 	for (i = 0; i < NR_BANKS(ima_tpm_chip); i++) {
+ 		algo = ima_tpm_chip->allocated_banks[i].crypto_id;
+@@ -135,18 +135,26 @@ int __init ima_init_crypto(void)
+ 		if (algo == ima_hash_algo)
+ 			ima_hash_algo_idx = i;
+ 
+-		if (algo == HASH_ALGO_SHA256)
+-			ima_sha256_idx = i;
++		if (algo == ima_template_hash_algo)
++			ima_template_hash_algo_idx = i;
+ 	}
+ 
+ 	if (ima_sha1_idx < 0) {
+ 		ima_sha1_idx = NR_BANKS(ima_tpm_chip) + ima_extra_slots++;
+ 		if (ima_hash_algo == HASH_ALGO_SHA1)
+ 			ima_hash_algo_idx = ima_sha1_idx;
++		if (ima_template_hash_algo == HASH_ALGO_SHA1)
++			ima_template_hash_algo_idx = ima_sha1_idx;
+ 	}
+ 
+-	if (ima_hash_algo_idx < 0)
++	if (ima_hash_algo_idx < 0) {
+ 		ima_hash_algo_idx = NR_BANKS(ima_tpm_chip) + ima_extra_slots++;
++		if (ima_template_hash_algo == ima_hash_algo)
++			ima_template_hash_algo_idx = ima_hash_algo_idx;
++	}
++
++	if (ima_template_hash_algo_idx < 0) 
++		ima_template_hash_algo_idx = NR_BANKS(ima_tpm_chip) + ima_extra_slots++;
+ 
+ 	ima_algo_array = kcalloc(NR_BANKS(ima_tpm_chip) + ima_extra_slots,
+ 				 sizeof(*ima_algo_array), GFP_KERNEL);
+@@ -201,6 +209,15 @@ int __init ima_init_crypto(void)
+ 		ima_algo_array[ima_hash_algo_idx].algo = ima_hash_algo;
+ 	}
+ 
++	if (ima_template_hash_algo_idx >= NR_BANKS(ima_tpm_chip) &&
++	    ima_template_hash_algo_idx != ima_sha1_idx && ima_template_hash_algo_idx != ima_hash_algo_idx) {
++		ima_algo_array[ima_template_hash_algo_idx].tfm = ima_alloc_tfm(ima_template_hash_algo);
++		if (IS_ERR(ima_algo_array[ima_template_hash_algo_idx].tfm)) {
++			rc = PTR_ERR(ima_algo_array[ima_template_hash_algo_idx].tfm);
++			goto out_array;
++		}
++	}
++
+ 	return 0;
+ out_array:
+ 	for (i = 0; i < NR_BANKS(ima_tpm_chip) + ima_extra_slots; i++) {
+diff --git a/security/integrity/ima/ima_fs.c b/security/integrity/ima/ima_fs.c
+index 3ede846874cf..d81187c95549 100644
+--- a/security/integrity/ima/ima_fs.c
++++ b/security/integrity/ima/ima_fs.c
+@@ -22,6 +22,7 @@
+ #include <linux/parser.h>
+ #include <linux/vmalloc.h>
+ #include <linux/tpm.h>
++#include <crypto/hash_info.h>
+ 
+ #include "ima.h"
+ 
+@@ -131,7 +132,7 @@ int ima_measurements_show(struct seq_file *m, void *v)
+ 	struct ima_queue_entry *qe = v;
+ 	struct ima_template_entry *e;
+ 	char *template_name;
+-	u32 pcr, namelen, template_data_len; /* temporary fields */
++	u32 pcr, namelen, template_hash_len, template_data_len; /* temporary fields */
+ 	bool is_ima_template = false;
+ 	int i;
+ 
+@@ -151,21 +152,23 @@ int ima_measurements_show(struct seq_file *m, void *v)
+ 	pcr = !ima_canonical_fmt ? e->pcr : cpu_to_le32(e->pcr);
+ 	ima_putc(m, &pcr, sizeof(e->pcr));
+ 
+-	/* 2nd: template digest */
+-	if ((ima_tpm_chip->flags & TPM_CHIP_FLAG_TPM2) && (ima_entry_hash_algo == HASH_ALGO_SHA256) && (ima_sha256_idx != -1)) 
+-		ima_putc(m, e->digests[ima_sha256_idx].digest, TPM2_DIGEST_SIZE);
+-	else
+-		ima_putc(m, e->digests[ima_sha1_idx].digest, TPM_DIGEST_SIZE);
++	/* 2nd: template digest size */
++	template_hash_len = !ima_canonical_fmt ? hash_digest_size[ima_template_hash_algo] :
++		cpu_to_le32(hash_digest_size[ima_template_hash_algo]);
++	ima_putc(m, &template_hash_len, sizeof(template_hash_len));
++	
++	/* 3rd: template digest */
++	ima_putc(m, e->digests[ima_template_hash_algo_idx].digest, hash_digest_size[ima_template_hash_algo]);
+ 
+-	/* 3rd: template name size */
++	/* 4rd: template name size */
+ 	namelen = !ima_canonical_fmt ? strlen(template_name) :
+ 		cpu_to_le32(strlen(template_name));
+ 	ima_putc(m, &namelen, sizeof(namelen));
+ 
+-	/* 4th:  template name */
++	/* 5th:  template name */
+ 	ima_putc(m, template_name, strlen(template_name));
+ 
+-	/* 5th:  template length (except for 'ima' template) */
++	/* 6th:  template length (except for 'ima' template) */
+ 	if (strcmp(template_name, IMA_TEMPLATE_IMA_NAME) == 0)
+ 		is_ima_template = true;
+ 
+@@ -175,7 +178,7 @@ int ima_measurements_show(struct seq_file *m, void *v)
+ 		ima_putc(m, &template_data_len, sizeof(e->template_data_len));
+ 	}
+ 
+-	/* 6th:  template specific data */
++	/* 7th:  template specific data */
+ 	for (i = 0; i < e->template_desc->num_fields; i++) {
+ 		enum ima_show_type show = IMA_SHOW_BINARY;
+ 		const struct ima_template_field *field =
+@@ -237,18 +240,9 @@ static int ima_ascii_measurements_show(struct seq_file *m, void *v)
+ 	/* 1st: PCR used (config option) */
+ 	seq_printf(m, "%2d ", e->pcr);
+ 
+-	/* 2nd: SHA1 template hash */
+-	if ((ima_tpm_chip->flags & TPM_CHIP_FLAG_TPM2) && (ima_entry_hash_algo == HASH_ALGO_SHA256) && (ima_sha256_idx != -1)) {
+-		//for (i = 0; i < ima_tpm_chip->nr_allocated_banks; i++)
+-		//	if (e->digests[i].alg_id == TPM_ALG_SHA256) {
+-		//		ima_print_digest(m, e->digests[i].digest, TPM2_DIGEST_SIZE);
+-		//		flag = true;
+-		//		break;
+-		//	}
+-		ima_print_digest(m, e->digests[ima_sha256_idx].digest, TPM2_DIGEST_SIZE);
+-	} else {
+-		ima_print_digest(m, e->digests[ima_sha1_idx].digest, TPM_DIGEST_SIZE);
+-	}
++	/* 2nd: template hash */
++	seq_printf(m, "%s:", hash_algo_name[ima_template_hash_algo]);
++	ima_print_digest(m, e->digests[ima_template_hash_algo_idx].digest, hash_digest_size[ima_template_hash_algo]);
+ 
+ 	/* 3th:  template name */
+ 	seq_printf(m, " %s", template_name);
+diff --git a/security/integrity/ima/ima_main.c b/security/integrity/ima/ima_main.c
+index 112569135313..018931eaec33 100644
+--- a/security/integrity/ima/ima_main.c
++++ b/security/integrity/ima/ima_main.c
+@@ -36,9 +36,9 @@ int ima_appraise;
+ #endif
+ 
+ int ima_hash_algo = HASH_ALGO_SHA1;
+-int ima_entry_hash_algo = HASH_ALGO_SHA1;
++int ima_template_hash_algo = HASH_ALGO_SHA1;
+ static int hash_setup_done;
+-static int entry_hash_setup_done;
++static int template_hash_setup_done;
+ 
+ static struct notifier_block ima_lsm_policy_notifier = {
+ 	.notifier_call = ima_lsm_policy_change,
+@@ -90,27 +90,25 @@ static int __init hash_setup(char *str)
+ }
+ __setup("ima_hash=", hash_setup);
+ 
+-static int __init entry_hash_setup(char *str)
++static int __init template_hash_setup(char *str)
+ {
+-	if (entry_hash_setup_done)
++	int i;
++
++	if (template_hash_setup_done)
+ 		return 1;
+ 
+-	if ((ima_tpm_chip->flags & TPM_CHIP_FLAG_TPM2) && !strcmp(str, "sha256")) {
+-		pr_info("Using \"sha256\" as entry-hash algorithm in the Measurements Log.");
+-		ima_entry_hash_algo = HASH_ALGO_SHA256;
+-		goto out;
++	i = match_string(hash_algo_name, HASH_ALGO__LAST, str);
++	if (i < 0) {
++		pr_err("invalid template-hash algorithm \"%s\"", str);
++		return 1;
+ 	}
+ 
+-	if (strcmp(str, "sha1")) 
+-		pr_err("Invalid entry-hash algorithm \"%s\", using \"sha1\" in the measurements log.", str);
+-	else
+-		pr_info("Using \"sha1\" as entry-hash algorithm in the Measurements Log.");
++	ima_template_hash_algo = i;
+ 
+-out:
+-	entry_hash_setup_done = 1;
++	template_hash_setup_done = 1;
+ 	return 1;
+ }
+-__setup("ima_entry_hash=", entry_hash_setup);
++__setup("ima_template_hash=", template_hash_setup);
+ 
+ 
+ /* Prevent mmap'ing a file execute that is already mmap'ed write */
+@@ -1023,10 +1021,9 @@ static int __init init_ima(void)
+ 	ima_appraise_parse_cmdline();
+ 	ima_init_template_list();
+ 	hash_setup(CONFIG_IMA_DEFAULT_HASH);
++	template_hash_setup(CONFIG_IMA_DEFAULT_TEMPLATE_HASH);
+ 	error = ima_init();
+ 
+-	/* call entry_hash_setup() after ima_init() */
+-	entry_hash_setup(CONFIG_IMA_DEFAULT_ENTRY_HASH);
+ 
+ 	if (error && strcmp(hash_algo_name[ima_hash_algo],
+ 			    CONFIG_IMA_DEFAULT_HASH) != 0) {
+@@ -1037,6 +1034,15 @@ static int __init init_ima(void)
+ 		error = ima_init();
+ 	}
+ 
++	if (error && strcmp(hash_algo_name[ima_template_hash_algo],
++			    CONFIG_IMA_DEFAULT_TEMPLATE_HASH) != 0) {
++		pr_info("Allocating %s failed, going to use default template-hash algorithm %s\n",
++			hash_algo_name[ima_template_hash_algo], CONFIG_IMA_DEFAULT_TEMPLATE_HASH);
++		template_hash_setup_done = 0;
++		template_hash_setup(CONFIG_IMA_DEFAULT_TEMPLATE_HASH);
++		error = ima_init();
++	}
++
+ 	if (error)
+ 		return error;
+ 
+diff --git a/security/integrity/ima/ima_template.c b/security/integrity/ima/ima_template.c
+index 6a58b82c41a9..9c562b4a3dfa 100644
+--- a/security/integrity/ima/ima_template.c
++++ b/security/integrity/ima/ima_template.c
+@@ -22,8 +22,10 @@ static struct ima_template_desc builtin_templates[] = {
+ 	{.name = "ima-sig", .fmt = "d-ng|n-ng|sig"},
+ 	{.name = "ima-buf", .fmt = "d-ng|n-ng|buf"},
+ 	{.name = "ima-modsig", .fmt = "d-ng|n-ng|sig|d-modsig|modsig"},
+-	{.name = "ima-cgn", .fmt = "pid|cgn|d-ng|n-ng"},
++	{.name = "ima-cgn", .fmt = "cgn|d-ng|n-ng"},
+ 	{.name = "ima-mns", .fmt = "pid|mns|d-ng|n-ng"},
++	{.name = "ima-comm", .fmt = "comm|cgn|d-ng|n-ng"},
++	{.name = "ima-dep-cgn", .fmt = "dep|cgn|d-ng|n-ng"},
+ 	{.name = "", .fmt = ""},	/* placeholder for a custom format */
+ };
+ 
+@@ -53,6 +55,10 @@ static const struct ima_template_field supported_fields[] = {
+ 	 .field_show = ima_show_template_string},
+ 	{.field_id = "mns", .field_init = ima_eventmns_init,
+ 	 .field_show = ima_show_template_string},
++	{.field_id = "comm", .field_init = ima_eventcomm_init,
++	 .field_show = ima_show_template_string},
++	{.field_id = "dep", .field_init = ima_eventdep_init,
++	 .field_show = ima_show_template_string},
+ };
+ 
+ /*
+diff --git a/security/integrity/ima/ima_template_lib.c b/security/integrity/ima/ima_template_lib.c
+index 3b2ba9d74679..73350e7a94cf 100644
+--- a/security/integrity/ima/ima_template_lib.c
++++ b/security/integrity/ima/ima_template_lib.c
+@@ -16,6 +16,7 @@
+ #include <linux/types.h>
+ #include <asm-generic/atomic-long.h>
+ #include <linux/ns_common.h>
++#include <linux/mm.h>
+ 
+ #include "ima_template_lib.h"
+ 
+@@ -494,13 +495,13 @@ int ima_eventmodsig_init(struct ima_event_data *event_data,
+ }
+ 
+ /*
+- * ima_eventpid_init - inclue the current task's pid chain as part of the
++ * ima_eventpid_init - include the current task's pid chain as part of the
+  * template data
+  */
+ int ima_eventpid_init(struct ima_event_data *event_data,
+ 			 struct ima_field_data *field_data)
+ {
+-	int count = 0;
++	int count = 0, rc;
+ 	char *pids_str = NULL;
+ 	char pid[12];
+ 	struct task_struct *curr_task = NULL;
+@@ -526,14 +527,15 @@ int ima_eventpid_init(struct ima_event_data *event_data,
+ 		strcat(pids_str, pid);
+ 	}
+ 
+-	field_data->data = pids_str;
+-	field_data->len = strlen(pids_str);
++	rc = ima_write_template_field_data(pids_str, strlen(pids_str), DATA_FMT_STRING, field_data);
+ 
+-	return 0;
++	kfree(pids_str);
++
++	return rc;
+ }
+ 
+ /*
+- * ima_eventcontID_init - inclue the current task's Docker Container full-ID (if any) as part of the
++ * ima_eventcontID_init - include the current task's Docker Container full-ID (if any) as part of the
+  * template data
+  */
+ int ima_eventcgn_init(struct ima_event_data *event_data,
+@@ -541,7 +543,7 @@ int ima_eventcgn_init(struct ima_event_data *event_data,
+ {
+ 	char *cgroup_name_str = NULL;
+ 	struct cgroup *cgroup = NULL;
+-	int ret = 0;
++	int rc = 0;
+ 
+ 	cgroup_name_str = kmalloc(NAME_MAX, GFP_KERNEL);
+ 	if (!cgroup_name_str)
+@@ -550,25 +552,22 @@ int ima_eventcgn_init(struct ima_event_data *event_data,
+ 	cgroup = task_cgroup(current, 1);
+ 	if (!cgroup)
+ 		goto out;
+-	ret = cgroup_name(cgroup, cgroup_name_str, NAME_MAX);
+-	if (!ret)
++	rc = cgroup_name(cgroup, cgroup_name_str, NAME_MAX);
++	if (!rc)
+ 		goto out;
+ 
+-	field_data->data = cgroup_name_str;
+-	field_data->len = strlen(cgroup_name_str);
++	rc = ima_write_template_field_data(cgroup_name_str, strlen(cgroup_name_str), DATA_FMT_STRING, field_data);
+ 
+-	return 0;
++	kfree(cgroup_name_str);
+ 
+-out:
+-	sprintf(cgroup_name_str, "-");
+-	field_data->data = cgroup_name_str;
+-	field_data->len = 1;
++	return rc;
+ 
+-	return 0;
++out:
++	return ima_write_template_field_data("-", 1, DATA_FMT_STRING, field_data);
+ }
+ 
+ /*
+- * ima_eventmns_init - inclue the current task's mount namespace inum as part of the
++ * ima_eventmns_init - include the current task's mount namespace inum as part of the
+  * template data
+  */
+ int ima_eventmns_init(struct ima_event_data *event_data,
+@@ -596,15 +595,116 @@ int ima_eventmns_init(struct ima_event_data *event_data,
+ 	sprintf(mns_inum_str, "%u", ns_common->inum);
+ 
+ 	field_data->data = mns_inum_str;
+-	field_data->len = strlen(mns_inum_str);
++	field_data->len = strlen(mns_inum_str)+1;
+ 
+ 	return 0;
+ 
+ out:
+ 	sprintf(mns_inum_str, "-");
+ 	field_data->data = mns_inum_str;
+-	field_data->len = 1;
++	field_data->len = 2;
+ 
+ 	return 0;
+ }
+ 
++/*
++ * ima_eventcomm_init - include the current task's command-chain as part of the
++ * template data
++ */
++int ima_eventcomm_init(struct ima_event_data *event_data,
++			 struct ima_field_data *field_data)
++{
++	int count = 0, rc;
++	char *comms_str = NULL;
++	char comm[TASK_COMM_LEN];
++	struct task_struct *curr_task = NULL;
++
++	//get number of ancestors for current task
++	for (curr_task = current; curr_task && curr_task->pid; curr_task = curr_task->real_parent)
++		count++;
++
++	if (curr_task)
++		count++;
++
++	comms_str = kmalloc(TASK_COMM_LEN*count + (count-1), GFP_KERNEL);
++	if (!comms_str)
++		return -ENOMEM;
++
++	comms_str[0] = '\0';
++	for (curr_task = current; curr_task && curr_task->pid; curr_task = curr_task->real_parent) {
++		get_task_comm(comm, curr_task);
++		
++		strcat(comms_str, comm);
++		strcat(comms_str, ":");
++	}	
++	if (curr_task) {
++		get_task_comm(comm, curr_task);
++		strcat(comms_str, comm);
++	}
++
++	rc = ima_write_template_field_data(comms_str, strlen(comms_str), DATA_FMT_STRING, field_data);
++
++	kfree(comms_str);
++
++	return rc;
++}
++
++/*
++ * ima_eventdep_init - include the executable's path, colon separated, for all the ancestors of the current task as part of the
++ * template data
++ */
++int ima_eventdep_init(struct ima_event_data *event_data,
++			 struct ima_field_data *field_data)
++{
++	int count = 0, rc;
++	char *paths_buf = NULL, *pathbuf = NULL;
++	const char *pathname = NULL;
++	char filename[NAME_MAX];
++	struct task_struct *curr_task = NULL;
++	struct file *exe_file = NULL;
++	char comm[TASK_COMM_LEN];
++
++	//get number of ancestors for current task
++	for (curr_task = current; curr_task && curr_task->pid; curr_task = curr_task->real_parent)
++		count++;
++
++	if (curr_task)
++		count++;
++
++	paths_buf = kmalloc(PATH_MAX*count+count-1, GFP_KERNEL);
++	if (!paths_buf)
++		return -ENOMEM;
++
++	paths_buf[0] = '\0';
++	for (curr_task = current; curr_task && curr_task->pid; curr_task = curr_task->real_parent) {
++		exe_file = get_task_exe_file(curr_task);
++		if (!exe_file) {
++			get_task_comm(comm, curr_task);
++			strcat(paths_buf, comm);
++			strcat(paths_buf, ":");
++			continue;
++		}
++
++		pathname = ima_d_path(&exe_file->f_path, &pathbuf, filename);
++
++		strcat(paths_buf, pathname);
++		strcat(paths_buf, ":");
++	}	
++	if (curr_task) {
++		exe_file = get_task_exe_file(curr_task);
++		if (!exe_file) {
++			get_task_comm(comm, curr_task);
++			strcat(paths_buf, comm);
++		} else {
++			pathname = ima_d_path(&exe_file->f_path, &pathbuf, filename);
++			strcat(paths_buf, pathname);
++		}
++	}
++
++	rc = ima_write_template_field_data(paths_buf, strlen(paths_buf), DATA_FMT_STRING, field_data);
++
++	kfree(paths_buf);
++
++	return rc;
++}
++
+diff --git a/security/integrity/ima/ima_template_lib.h b/security/integrity/ima/ima_template_lib.h
+index d0744d698444..51be4d8c4589 100644
+--- a/security/integrity/ima/ima_template_lib.h
++++ b/security/integrity/ima/ima_template_lib.h
+@@ -52,5 +52,9 @@ int ima_eventcgn_init(struct ima_event_data *event_data,
+ 		      struct ima_field_data *field_data);
+ int ima_eventmns_init(struct ima_event_data *event_data,
+ 		      struct ima_field_data *field_data);
++int ima_eventcomm_init(struct ima_event_data *event_data,
++		      struct ima_field_data *field_data);
++int ima_eventdep_init(struct ima_event_data *event_data,
++		      struct ima_field_data *field_data);
+ #endif /* __LINUX_IMA_TEMPLATE_LIB_H */
+ 
+-- 
+2.25.1
+
