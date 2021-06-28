@@ -53,8 +53,8 @@ Select `Security options --->`, then select the following configuration in the `
 		Default template (ima-dep-cgn) --->
 		Default integrity hash algorithm (SHA256) --->
 		Default template-hash algorithm (SHA256) --->
-	[ ]	IMA cache1 enabled
-	[ ]	IMA cache2 enabled
+	[*]	IMA cache1 enabled
+	[*]	IMA cache2 enabled
 
 For compiling the kernel, install:
 
@@ -73,6 +73,30 @@ When the compilation finishes, install the new kernel:
 	$ sudo dpkg -i linux*.deb
 
 Once the installation completes, reboot the system with the new kernel.
+
+## Generating the whitelist for a specific path by using "whitelist_generator.cpp"
+
+The `whitelist_generator.cpp` program generates the whitelist corresponding to a specific path received as parameter. It creates the file "whitelist" containing the sha256 hash for all the files found in the specified path. The file "whitelist" is created in the current directory.
+
+Compile the program:
+
+	g++ -std=c++17 -L/usr/lib/x86_64-linux-gnu/ -o whitelist_generator whitelist_generator.cpp -lssl -lcrypto
+	
+If you want to create the whitelist corresponding to the path `/usr/bin/`, launch the program as:
+
+	./whitelist_generator /usr/bin/
+	
+## Analysis of directories present in the Measurement Log by using "ML_inspector.cpp"
+
+The `ML_inspector.cpp` program generates in the current directory a file, called "ML_analysis", containing the list of all the directories present in the current IMA Measurement Log.
+
+Compile the program:
+
+	g++ -o ML_inspector ML_inspector.cpp
+	
+The program needs the position, starting by zero, of the file-path in the current IMA template. For example, if the current IMA template is "ima-cgn", launch the program as:
+
+	./ML_inspector 6
 
 ## Generating whitelists for host and containers by using "whitelists_host_cont.cpp"
 
@@ -106,29 +130,3 @@ If we provide to the program only the first two parameters, only the `allowlist_
 For example, if we suppose that the current IMA template is `ima-cgn`, then we can launch the program with the following parameters:
 
 	$ sudo ./whitelists_host_cont 5 6 3 4 /usr/bin/containerd-shim-runc-v2 2
-
-## Generating the whitelist for a specific path by using "whitelist_generator.cpp"
-
-The `whitelist_generator.cpp` program generates the whitelist corresponding to a specific path received as parameter. It creates the file "whitelist" containing the sha256 hash for all the files found in the specified path. The file "whitelist" is created in the current directory.
-
-Compile the program:
-
-	g++ -std=c++17 -L/usr/lib/x86_64-linux-gnu/ -o whitelist_generator whitelist_generator.cpp -lssl -lcrypto
-	
-If you want to create the whitelist corresponding to the path `/usr/bin/`, launch the program as:
-
-	./whitelist_generator /usr/bin/
-	
-## Analysis of directories present in the Measurement Log by using "ML_inspector.cpp"
-
-The `ML_inspector.cpp` program generates in the current directory a file, called "ML_analysis", containing the list of all the directories present in the current IMA Measurement Log.
-
-Compile the program:
-
-	g++ -o ML_inspector ML_inspector.cpp
-	
-The program needs the position, starting by zero, of the file-path in the current IMA template. For example, if the current IMA template is "ima-cgn", launch the program as:
-
-	./ML_inspector 6
-
-
