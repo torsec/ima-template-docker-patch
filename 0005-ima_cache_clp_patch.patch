@@ -1,0 +1,42 @@
+From a464d2566a7ce6b2dda8f75d739b79ef75cfca4b Mon Sep 17 00:00:00 2001
+From: Silvia Sisinni <silviasisinni@gmail.com>
+Date: Fri, 23 Jul 2021 02:03:56 +0200
+Subject: [PATCH 5/5] ima_cache_clp_patch
+
+---
+ security/integrity/ima/ima_init.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/security/integrity/ima/ima_init.c b/security/integrity/ima/ima_init.c
+index 604d5a4e9686..4fcd6eec9906 100644
+--- a/security/integrity/ima/ima_init.c
++++ b/security/integrity/ima/ima_init.c
+@@ -161,11 +161,12 @@ static int __init ima_cache1_setup(char *str)
+ 	if (strncmp(str, "false", 5) == 0) {
+ 		pr_info("Disabling cache1");
+ 		ima_cache1_enabled = false;
++	} else {
++		ima_cache1_enabled = true;
+ 	}
+ 
+ 	return 1;
+ }
+-
+ __setup("ima_cache1=", ima_cache1_setup);
+ 
+ /*Disable cache2 flag*/
+@@ -174,9 +175,10 @@ static int __init ima_cache2_setup(char *str)
+ 	if (strncmp(str, "false", 5) == 0) {
+ 		pr_info("Disabling cache2");
+ 		ima_cache2_enabled = false;
++	} else {
++		ima_cache2_enabled = true;
+ 	}
+ 
+ 	return 1;
+ }
+-
+ __setup("ima_cache2=", ima_cache2_setup);
+-- 
+2.25.1
+
